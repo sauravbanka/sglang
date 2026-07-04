@@ -21,6 +21,7 @@ from sglang.srt.distributed.device_communicators.pynccl_allocator import (
 )
 from sglang.srt.environ import envs
 from sglang.srt.eplb.expert_location import get_global_expert_location_metadata
+from sglang.srt.layers.moe import bubble_profile
 from sglang.srt.layers.dp_attention import is_allocation_symmetric
 from sglang.srt.layers.moe import (
     MoeRunnerConfig,
@@ -1232,23 +1233,41 @@ class FusedMoE(torch.nn.Module):
         origin_hidden_states_dim = hidden_states.shape[-1]
         assert self.quant_method is not None
 
+        # EP-bubble profiling: bracket dispatch / GEMM / combine with CUDA events.
+        # The e2->e3 (combine) window contains the idle wait for the heavy rank.
+        _bp = bubble_profile.should_record(self.moe_ep_size)
+        _ev = bubble_profile.new_events() if _bp else None
+        if _bp:
+            _ev[0].record()
+
         dispatch_output = self.dispatcher.dispatch(
             hidden_states=hidden_states, topk_output=topk_output
         )
+        if _bp:
+            _ev[1].record()
 
         combine_input = self.run_moe_core(
             dispatch_output=dispatch_output,
         )
+        if _bp:
+            _ev[2].record()
 
         with use_symmetric_memory(
             get_tp_group(), disabled=not is_allocation_symmetric()
         ):
             final_hidden_states = self.dispatcher.combine(combine_input=combine_input)
+            if _bp:
+                _ev[3].record()
 
             # TODO: should we add some conditions here?
             final_hidden_states = final_hidden_states[
                 ..., :origin_hidden_states_dim
             ].contiguous()
+
+        if _bp:
+            bubble_profile.submit(
+                self.layer_id, hidden_states.shape[0], self.moe_ep_rank, _ev
+            )
 
         if self.reduce_results and (self.moe_tp_size > 1 or self.moe_ep_size > 1):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)

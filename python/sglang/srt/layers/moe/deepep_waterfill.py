@@ -566,6 +566,13 @@ class DeepEPWaterfillBalancer:
             return self._expand_local_shared(topk_output)
 
         dispatch_plan = self._build_dispatch_plan(topk_output.topk_ids, num_tokens)
+        if dispatch_plan is not None:
+            # Record the balancer's predicted per-rank load so the bubble profiler
+            # can correlate this free pre-dispatch estimate against the measured
+            # bubble for the same layer (no-op unless SGLANG_BUBBLE_PROFILE=1).
+            from sglang.srt.layers.moe import bubble_profile
+
+            bubble_profile.stash_rank_load(self.layer_id, dispatch_plan.rank_load)
         if dispatch_plan is None:
             if num_tokens == 0:
                 expanded_ids, expanded_weights = _empty_expanded(

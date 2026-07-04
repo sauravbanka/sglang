@@ -278,6 +278,9 @@ class Envs:
     SGLANG_PROFILE_WITH_STACK = EnvBool(True)
     SGLANG_PROFILE_RECORD_SHAPES = EnvBool(True)
     SGLANG_PROFILE_V2 = EnvBool(False)
+    # EP-imbalance "bubble" profiler for the MoE dispatch/combine path.
+    # See sglang/srt/layers/moe/bubble_profile.py.
+    SGLANG_BUBBLE_PROFILE = EnvBool(False)
     SGLANG_ENABLE_NVTX_SCHEDULER = EnvBoolWithAlias(
         False, deprecated_name="SGLANG_ENABLE_NVTX"
     )

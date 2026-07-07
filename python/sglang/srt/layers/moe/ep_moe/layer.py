@@ -12,6 +12,7 @@ from sglang.srt.layers.moe import (
     get_moe_a2a_backend,
     get_moe_runner_backend,
 )
+from sglang.srt.layers.moe import bubble_profile
 from sglang.srt.layers.moe.fused_moe_triton.layer import (
     FusedMoE,
     moe_forward_piecewise_cuda_graph_impl,
@@ -178,11 +179,32 @@ class DeepEPMoE(FusedMoE):
                 topk_output,
             )
 
+        # EP-bubble profiling: bracket dispatch / expert compute / combine. The
+        # e2->e3 (combine) window holds the idle wait for the heavy rank.
+        # DeepSeek + DeepEP routes through THIS override (not the FusedMoE base
+        # forward_impl), so the events must live here too.
+        _bp = bubble_profile.should_record(self.moe_ep_size)
+        _ev = bubble_profile.new_events() if _bp else None
+        if _bp:
+            _ev[0].record()
+
         dispatch_output = self.dispatcher.dispatch(
             hidden_states=hidden_states, topk_output=topk_output
         )
+        if _bp:
+            _ev[1].record()
+
         combine_input = self.run_moe_core(dispatch_output)
-        return self.dispatcher.combine(combine_input=combine_input)
+        if _bp:
+            _ev[2].record()
+
+        final_hidden_states = self.dispatcher.combine(combine_input=combine_input)
+        if _bp:
+            _ev[3].record()
+            bubble_profile.submit(
+                self.layer_id, hidden_states.shape[0], self.moe_ep_rank, _ev
+            )
+        return final_hidden_states
 
     def dispatch(
         self,
